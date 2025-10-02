@@ -36,6 +36,7 @@ class PLCReaderApp:
         self._input_widgets: list[tk.Widget] = []
         self._records_cache: Tuple[SAWLOG, ...] | None = None
         self._detail_window: Optional[DetailWindow] = None
+        self._pending_start: Optional[tuple] = None  # holds args for _start_reader on restart
 
         self._build_ui()
         self._set_initial_geometry()
@@ -157,6 +158,11 @@ class PLCReaderApp:
             self.start_var.set(str(new_settings.start))
             self.size_var.set(str(new_settings.size))
             self.interval_var.set(str(new_settings.interval_ms))
+            # Make settings effective immediately: if running, restart reader with new params
+            try:
+                self._schedule_restart_with(new_settings)
+            except Exception:
+                pass
 
         self._settings_win = SettingsWindow(self.root, current, apply_cb)
 
@@ -182,6 +188,13 @@ class PLCReaderApp:
             selectmode="browse",
             height=15,
         )
+        # Use a monospaced font in the table so glyphs align uniformly
+        try:
+            style = ttk.Style(self.root)
+            style.configure("Monospace.Treeview", font=("Consolas", 10))
+            self.tree.configure(style="Monospace.Treeview")
+        except Exception:
+            pass
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -200,8 +213,8 @@ class PLCReaderApp:
             "Sensor": ("Sensor", 70),
             "Length": ("Length", 80),
             "DropBox": ("DropBox", 90),
-            "Flags": ("Flags", 80),
-            "Buttons": ("Buttons", 160),
+            "Flags": ("Flags", 120),
+            "Buttons": ("Buttons", 800),
             "Timestamp": ("Timestamp", 180),
         }
         for col in columns:
@@ -308,8 +321,8 @@ class PLCReaderApp:
                         client.disconnect()
                 except Exception:
                     pass
-                # On final disconnect, always clear table
-                self._post_handle_disconnect(clear_table=True)
+                # On final disconnect, clear table only if not immediately restarting
+                self._post_handle_disconnect(clear_table=(self._pending_start is None))
                 self._console_log("Disconnected")
                 self.root.after(0, self._reset_controls_after_disconnect)
 
@@ -317,6 +330,17 @@ class PLCReaderApp:
         self._reader_thread.start()
 
     def _reset_controls_after_disconnect(self) -> None:
+        # If there's a pending restart, start it now instead of returning to idle
+        if self._pending_start is not None:
+            args = self._pending_start
+            self._pending_start = None
+            # Start with new settings
+            try:
+                self._start_reader(*args)
+                return
+            except Exception:
+                # Fall back to normal reset if start fails
+                pass
         self._set_controls_enabled(True)
         try:
             self._file_menu.entryconfig(self._file_menu_connect_index, label="Connect")
@@ -371,6 +395,23 @@ class PLCReaderApp:
                 self._clear_overview_rows()
         self.root.after(0, task)
 
+    def _schedule_restart_with(self, settings: AppSettings) -> None:
+        # If reader is running, schedule a restart with new settings
+        if self._reader_thread and self._reader_thread.is_alive():
+            try:
+                config = PLCConfig(
+                    address=settings.address.strip(),
+                    rack=int(settings.rack),
+                    slot=int(settings.slot),
+                    tcp_port=int(settings.tcp_port),
+                )
+                self._pending_start = (config, int(settings.db), int(settings.start), int(settings.size), int(settings.interval_ms))
+                # Stop current reader; cleanup will trigger restart
+                self._stop_event.set()
+            except Exception:
+                # If parsing fails, ignore restart request
+                self._pending_start = None
+
     def _console_log(self, line: str) -> None:
         import time as _time
         ts = _time.strftime("%Y-%m-%d %H:%M:%S")
@@ -381,6 +422,25 @@ class PLCReaderApp:
             self.result_box.see("end")
             self.result_box.configure(state="disabled")
         self.root.after(0, append)
+
+    def _post_notice(self, message: str, success: bool, *, duration_ms: int = 3000) -> None:
+        prev = self.status_var.get()
+        color = '#2da44e' if success else '#d73a49'
+        def set_msg() -> None:
+            try:
+                self.status_text.configure(text=message)
+                self.status_indicator.configure(fg=color)
+            except Exception:
+                pass
+        def restore() -> None:
+            try:
+                self._apply_status_state(prev if prev in ('Online','Offline','Unknown') else 'Unknown')
+                self.status_text.configure(text=self.status_var.get())
+            except Exception:
+                pass
+        self.root.after(0, set_msg)
+        self.root.after(duration_ms, restore)
+
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -401,14 +461,22 @@ class PLCReaderApp:
         if not hasattr(self, "tree"):
             return
 
-        # Remember current selection (by iid/index) to restore after refresh
+        # Remember current selection (by iid/index) and scroll offsets to restore after refresh
         try:
             current_sel = self.tree.selection()
             selected_iid = current_sel[0] if current_sel else None
             selected_index = int(selected_iid) if selected_iid is not None else None
+            try:
+                x0 = self.tree.xview()[0]
+                y0 = self.tree.yview()[0]
+            except Exception:
+                x0 = 0.0
+                y0 = 0.0
         except Exception:
             selected_iid = None
             selected_index = None
+            x0 = 0.0
+            y0 = 0.0
 
         # Rebuild rows
         for item in self.tree.get_children():
@@ -417,14 +485,15 @@ class PLCReaderApp:
         if not records:
             return
         for index, record in enumerate(records):
-            flags_value = 0
-            for i, flag in enumerate(record.flags):
-                if flag:
-                    flags_value |= (1 << i)
-            flags_hex = f"0x{flags_value:04X}"
-            buttons_preview = " ".join(f"{b:X}" for b in record.buttons[:8])
-            if len(record.buttons) > 8:
-                buttons_preview += " ..."
+            # Render flags with spaces; add double space between two groups of 8
+            # Use full block for True (█) and light shade for False (░)
+            _flag_glyphs = ["█" if flag else "░" for flag in record.flags]
+            if len(_flag_glyphs) >= 16:
+                flags_boxes = " ".join(_flag_glyphs[:8]) + "  " + " ".join(_flag_glyphs[8:16])
+            else:
+                flags_boxes = " ".join(_flag_glyphs)
+            # Show all 64 button values as hex nibbles
+            buttons_full = " ".join(f"{b:X}" for b in record.buttons)
             timestamp = record.timestamp.to_datetime().isoformat(sep=" ")
             self.tree.insert(
                 "",
@@ -437,8 +506,8 @@ class PLCReaderApp:
                     record.sensor_id,
                     record.length,
                     record.drop_box_number,
-                    flags_hex,
-                    buttons_preview,
+                    flags_boxes,
+                    buttons_full,
                     timestamp,
                 ),
             )
@@ -452,9 +521,48 @@ class PLCReaderApp:
                     iid = str(len(records) - 1)
                 self.tree.selection_set(iid)
                 self.tree.focus(iid)
-                self.tree.see(iid)
+                # Do not auto-scroll to keep scroll position
         except Exception:
             pass
+
+        # Adjust columns to fit content for Flags and Buttons
+        try:
+            self._autosize_columns()
+        except Exception:
+            pass
+
+        # Restore scroll positions (horizontal and vertical)
+        try:
+            self.tree.xview_moveto(x0)
+            self.tree.yview_moveto(y0)
+        except Exception:
+            pass
+
+    def _autosize_columns(self) -> None:
+        import tkinter.font as tkfont
+        if not hasattr(self, "tree"):
+            return
+        # Use the same monospaced font used by the Treeview style
+        font = tkfont.Font(family="Consolas", size=10)
+        padding = 24
+        # Map column -> max width limits (pixels)
+        max_limits = {"Flags": 400, "Buttons": 1200}
+        for col in ("Flags", "Buttons"):
+            # header width
+            header_text = col
+            max_w = font.measure(header_text)
+            # content width
+            for iid in self.tree.get_children(""):
+                try:
+                    value = str(self.tree.set(iid, col))
+                except Exception:
+                    value = ""
+                if value:
+                    w = font.measure(value)
+                    if w > max_w:
+                        max_w = w
+            target = min(max_w + padding, max_limits.get(col, max_w + padding))
+            self.tree.column(col, width=int(target))
 
     def _on_row_double_click(self, _event=None) -> None:
         selection = self.tree.selection()
@@ -474,10 +582,41 @@ class PLCReaderApp:
                 self._detail_window = None
             # Open new details window with data provider
             self._detail_window = DetailWindow(
-                self.root, data_provider=lambda: self._records_cache, start_index=index
+                self.root,
+                data_provider=lambda: self._records_cache,
+                start_index=index,
+                send_callback=self._send_record_to_plc,
+                notice_callback=self._post_notice,
             )
             self._detail_window.focus()
+
+    # -- send to PLC ------------------------------------------------------------
+    def _send_record_to_plc(self, index: int, record: SAWLOG) -> None:
+        # Run send in background to avoid blocking UI
+        def worker() -> None:
+            try:
+                db = int(self.db_var.get())
+                start = int(self.start_var.get())
+                rack = int(self.rack_var.get())
+                slot = int(self.slot_var.get())
+                tcp_port = int(self.tcp_port_var.get())
+                address = self.address_var.get().strip()
+            except ValueError as exc:
+                self._console_log(f"Invalid settings for send: {exc}")
+                return
+            config = PLCConfig(address=address, rack=rack, slot=slot, tcp_port=tcp_port)
+            try:
+                with PLCClient(config) as client:
+                    client.write_sawlog_record(db, index, record, start=start)
+                self._console_log(f"Sent record {index} to DB{db} @ {start + index * record.BYTE_SIZE}")
+            except Exception as exc:
+                self._console_log(f"Send failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # -- entrypoint -------------------------------------------------------------
     def run(self) -> None:
         self.root.mainloop()
+
+
+

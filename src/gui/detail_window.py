@@ -19,9 +19,13 @@ class DetailWindow:
         root: tk.Tk,
         data_provider: Callable[[], Tuple[SAWLOG, ...] | None],
         start_index: int = 0,
+        send_callback: Callable[[int, SAWLOG], None] | None = None,
+        notice_callback: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._root = root
         self._data_provider = data_provider
+        self._send_cb = send_callback
+        self._notice_cb = notice_callback
         self._win: Optional[tk.Toplevel] = None
         self._content: Optional[ttk.Frame] = None
         self._index_var: Optional[tk.StringVar] = None
@@ -29,8 +33,14 @@ class DetailWindow:
         self._current_index = start_index
         # Cached widgets to avoid rebuild flicker
         self._header_value_labels: list[tk.Label] = []
-        self._flags_cells: list[tk.Label] = []  # 16 cells
-        self._buttons_cells: list[tk.Label] = []  # 64 cells
+        self._flags_cells: list[tk.Label] = []  # 16 cells (hidden in view/edit unified mode)
+        self._buttons_cells: list[tk.Label] = []  # 64 cells (hidden in view/edit unified mode)
+        # Unified editors used for both view/edit (disabled in view mode)
+        self._header_edit_entries: list[tk.Entry] = []
+        self._flag_check_vars: list[tk.BooleanVar] = []
+        self._flag_checkbuttons: list[tk.Checkbutton] = []
+        self._button_edit_entries: list[tk.Entry] = []
+        self._edit_mode: bool = False
         self._open()
 
     # -- public API -------------------------------------------------------------
@@ -86,7 +96,8 @@ class DetailWindow:
             idx = max(0, min(idx, count - 1))
             self._current_index = idx
             idx_var.set(str(idx))
-            self._render(idx)
+            # Force content refresh even in edit mode
+            self._render(idx, force=True)
 
         ttk.Button(nav, text="◀ Previous", command=lambda: goto(self._current_index - 1)).grid(
             row=0, column=0, sticky="w"
@@ -100,11 +111,31 @@ class DetailWindow:
             row=0, column=3, sticky="e"
         )
 
+        # Edit toggle button
+        self._edit_btn = ttk.Button(nav, text="Edit", command=self._toggle_edit)
+        self._edit_btn.grid(row=0, column=4, sticky="e", padx=(8, 0))
+        # Send button (enabled only in edit mode if callback is provided)
+        self._send_btn = ttk.Button(nav, text="Send to PLC", command=self._do_send)
+        self._send_btn.grid(row=0, column=5, sticky="e", padx=(8, 0))
+        if self._send_cb is None:
+            self._send_btn.state(["disabled"])  # disable when no callback
+        else:
+            # Start disabled until Edit mode is enabled
+            self._send_btn.state(["disabled"])  # enabled only in edit mode
+
         # dynamic content container
         content = ttk.Frame(win, padding=(8, 0))
         content.grid(row=1, column=0, sticky="nsew")
+        # status bar at bottom
+        status_bar = ttk.Frame(win, padding=(8, 4))
+        status_bar.grid(row=2, column=0, sticky="ew")
+        self._status_var = tk.StringVar(value="")
+        self._status_label = ttk.Label(status_bar, textvariable=self._status_var)
+        self._status_label.pack(side="left")
+
         win.columnconfigure(0, weight=1)
         win.rowconfigure(1, weight=1)
+        win.rowconfigure(2, weight=0)
         self._content = content
 
         def on_close() -> None:
@@ -135,7 +166,7 @@ class DetailWindow:
         y = py + max(0, (ph - wh) // 2)
         self._win.geometry(f"+{x}+{y}")
 
-    def _render(self, index: int) -> None:
+    def _render(self, index: int, *, force: bool = False) -> None:
         if self._content is None or self._win is None:
             return
         records = self._data_provider() or ()
@@ -151,10 +182,14 @@ class DetailWindow:
         if not (0 <= index < count):
             return
         record = records[index]
-        # Ensure UI is built once; then only update text values to avoid flicker
+        # Ensure UI is built once; then only update values in view mode
         self._ensure_built()
 
-        # Update header values (without index)
+        # If currently editing, do not overwrite user-edited values unless forced
+        if self._edit_mode and not force:
+            return
+
+        # Update header entry values (without index)
         values = [
             record.id,
             record.zone_id,
@@ -163,17 +198,35 @@ class DetailWindow:
             record.drop_box_number,
             record.timestamp.to_datetime().isoformat(sep=" "),
         ]
-        for lbl, val in zip(self._header_value_labels, values):
-            lbl.configure(text=str(val))
+        for ent, val in zip(self._header_edit_entries, values):
+            try:
+                ent.configure(state="normal")
+                ent.delete(0, tk.END)
+                ent.insert(0, str(val))
+                # Keep editable if currently in edit mode
+                if not self._edit_mode:
+                    ent.configure(state="disabled")
+            except Exception:
+                pass
 
-        # Update flags
+        # Update flags (checkbox variables)
         for i in range(16):
-            val = 1 if record.flags[i] else 0
-            self._flags_cells[i].configure(text=str(val))
+            try:
+                self._flag_check_vars[i].set(bool(record.flags[i]))
+            except Exception:
+                pass
 
-        # Update buttons
+        # Update buttons (entries)
         for i in range(64):
-            self._buttons_cells[i].configure(text=str(int(record.buttons[i])))
+            try:
+                ent = self._button_edit_entries[i]
+                ent.configure(state="normal")
+                ent.delete(0, tk.END)
+                ent.insert(0, str(int(record.buttons[i])))
+                if not self._edit_mode:
+                    ent.configure(state="disabled")
+            except Exception:
+                pass
 
     def _ensure_built(self) -> None:
         if self._content is None or self._win is None:
@@ -211,9 +264,16 @@ class DetailWindow:
         header_labels = ["ID", "Zone", "Sensor", "Length", "DropBox", "Timestamp"]
         for r, label in enumerate(header_labels):
             ttk.Label(header_frame, text=f"{label}:").grid(row=r, column=0, sticky="w", padx=6, pady=2)
+            # Keep label element for legacy but hide it; use entry for both view/edit
             val_label = tk.Label(header_frame, text="", anchor="w")
             val_label.grid(row=r, column=1, sticky="w", padx=6, pady=2)
+            val_label.grid_remove()
             self._header_value_labels.append(val_label)
+            # Unified entry (disabled in view mode)
+            e = tk.Entry(header_frame)
+            e.grid(row=r, column=1, sticky="ew", padx=6, pady=2)
+            e.configure(state="disabled")
+            self._header_edit_entries.append(e)
         header_frame.columnconfigure(1, weight=1)
 
         # Flags grid
@@ -225,8 +285,16 @@ class DetailWindow:
         for r in range(2):
             add_cell(flags_frame, r * 8, r + 1, 0, header=True, width=3)
             for c in range(8):
+                # Keep legacy cell hidden; use checkbox for view/edit
                 cell = add_cell(flags_frame, "", r + 1, c + 1, width=3)
+                cell.grid_remove()
                 self._flags_cells.append(cell)
+                var = tk.BooleanVar(value=False)
+                chk = tk.Checkbutton(flags_frame, variable=var, text="", width=2)
+                chk.grid(row=r + 1, column=c + 1)
+                chk.configure(state="disabled")
+                self._flag_check_vars.append(var)
+                self._flag_checkbuttons.append(chk)
         for c in range(9):
             flags_frame.columnconfigure(c, weight=1)
         for r in range(3):
@@ -242,7 +310,12 @@ class DetailWindow:
             add_cell(buttons_frame, r * 8, r + 1, 0, header=True, width=3)
             for c in range(8):
                 cell = add_cell(buttons_frame, "", r + 1, c + 1, width=3)
+                cell.grid_remove()
                 self._buttons_cells.append(cell)
+                ent = tk.Entry(buttons_frame, width=3)
+                ent.grid(row=r + 1, column=c + 1)
+                ent.configure(state="disabled")
+                self._button_edit_entries.append(ent)
         for c in range(9):
             buttons_frame.columnconfigure(c, weight=1)
         for r in range(9):
@@ -251,3 +324,119 @@ class DetailWindow:
         self._content.columnconfigure(0, weight=1)
         self._content.columnconfigure(1, weight=1)
         self._content.rowconfigure(1, weight=1)
+
+    def _toggle_edit(self) -> None:
+        self._ensure_built()
+        self._edit_mode = not self._edit_mode
+        editing = self._edit_mode
+        try:
+            self._edit_btn.configure(text="View" if editing else "Edit")
+        except Exception:
+            pass
+        # Enable/disable send button when editing
+        try:
+            if self._send_cb is None:
+                self._send_btn.state(["disabled"])  # no callback available
+            else:
+                if editing:
+                    self._send_btn.state(["!disabled"])  # enable
+                else:
+                    self._send_btn.state(["disabled"])  # disable in view mode
+        except Exception:
+            pass
+
+        # Toggle header entries enabled/disabled
+        for ent in self._header_edit_entries:
+            try:
+                ent.configure(state=("normal" if editing else "disabled"))
+            except Exception:
+                pass
+
+        # Toggle flags checkbuttons enabled/disabled
+        for chk in self._flag_checkbuttons:
+            try:
+                chk.configure(state=("normal" if editing else "disabled"))
+            except Exception:
+                pass
+
+        # Toggle buttons entries enabled/disabled
+        for ent in self._button_edit_entries:
+            try:
+                ent.configure(state=("normal" if editing else "disabled"))
+            except Exception:
+                pass
+
+    def _do_send(self) -> None:
+        if not self._edit_mode or self._send_cb is None:
+            return
+        # Build SAWLOG from editor fields
+        try:
+            id_val = int(self._header_edit_entries[0].get())
+            zone_val = int(self._header_edit_entries[1].get()) & 0xFF
+            sensor_val = int(self._header_edit_entries[2].get()) & 0xFF
+            length_val = int(self._header_edit_entries[3].get()) & 0xFFFF
+            dropbox_val = int(self._header_edit_entries[4].get()) & 0xFFFF
+        except Exception:
+            tk.messagebox.showerror("Invalid input", "Header fields must be numbers.", parent=self._win)
+            return
+
+        flags = tuple(bool(var.get()) for var in self._flag_check_vars)
+        buttons = []
+        for ent in self._button_edit_entries:
+            try:
+                v = int(ent.get(), 0)
+            except Exception:
+                v = 0
+            v = max(0, min(v, 15))
+            buttons.append(v)
+        buttons_t = tuple(buttons)
+
+        # Timestamp: keep previous value from provider (no direct editing of timestamp for simplicity)
+        recs = self._data_provider() or ()
+        if not (0 <= self._current_index < len(recs)):
+            return
+        ts = recs[self._current_index].timestamp
+
+        try:
+            new_record = SAWLOG(
+                id=id_val,
+                zone_id=zone_val,
+                sensor_id=sensor_val,
+                length=length_val,
+                drop_box_number=dropbox_val,
+                flags=flags,
+                buttons=buttons_t,
+                timestamp=ts,
+            )
+        except Exception as exc:
+            tk.messagebox.showerror("Invalid data", str(exc), parent=self._win)
+            return
+
+        try:
+            self._send_cb(self._current_index, new_record)
+        except Exception as exc:
+            self._set_status(f"Send failed: {exc}", success=False)
+            if self._notice_cb:
+                self._notice_cb(f"Send failed: {exc}", False)
+            return
+        self._set_status("Record sent to PLC.", success=True)
+        if self._notice_cb:
+            self._notice_cb("Record sent to PLC.", True)
+
+    def _set_status(self, message: str, *, success: bool, duration_ms: int = 3000) -> None:
+        color = "#2da44e" if success else "#d73a49"
+        try:
+            self._status_label.configure(foreground=color)
+        except Exception:
+            pass
+        self._status_var.set(message)
+        if self._win is not None:
+            def clear() -> None:
+                self._status_var.set("")
+                try:
+                    self._status_label.configure(foreground="")
+                except Exception:
+                    pass
+            self._win.after(duration_ms, clear)
+
+

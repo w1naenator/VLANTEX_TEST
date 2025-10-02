@@ -97,6 +97,20 @@ class PLCClient(AbstractContextManager["PLCClient"]):
                 f"Failed to read DB{db_number} offset {start} size {size}: {exc}"
             ) from exc
 
+    def write_db(self, db_number: int, start: int, data: bytes | bytearray) -> None:
+        """Write raw bytes to a PLC data block."""
+
+        self.ensure_connected()
+        assert self._client is not None  # for type-checkers
+        try:
+            # snap7 expects a bytearray-like buffer
+            buf = bytearray(data)
+            self._client.db_write(db_number, start, buf)
+        except Snap7Exception as exc:
+            raise RuntimeError(
+                f"Failed to write DB{db_number} offset {start} size {len(data)}: {exc}"
+            ) from exc
+
     def read_inputs(self, start: int, size: int) -> bytearray:
         """Read from the inputs (I area)."""
 
@@ -133,6 +147,16 @@ class PLCClient(AbstractContextManager["PLCClient"]):
                 f"Expected {size} bytes when reading SAWLOG register, received {len(payload)}"
             )
         return SawlogsRegisterDB.from_bytes(bytes(payload))
+
+    def write_sawlog_record(
+        self, db_number: int, index: int, record: SAWLOG, *, start: int = 0
+    ) -> None:
+        """Write a single SAWLOG record at the given index (0-based)."""
+
+        if index < 0:
+            raise ValueError("index must be non-negative")
+        offset = start + index * SAWLOG.BYTE_SIZE
+        self.write_db(db_number, offset, record.to_bytes())
 
     def bulk_read(self, requests: Iterable[Request]) -> Dict[Request, bytearray]:
         """Perform multiple DB reads and return a mapping of request -> bytes."""
