@@ -1,0 +1,105 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Debug GUI (main.py)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    },
+    {
+      "name": "Python: Release GUI (main.py)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "noDebug": true,
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    },
+    {
+      "name": "Python: Debug CLI - Full Register",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "${env:PLC_ADDRESS}",
+        "200",
+        "0",
+        "14280"
+      ],
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    },
+    {
+      "name": "Python: Release CLI - Full Register",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "noDebug": true,
+      "args": [
+        "${env:PLC_ADDRESS}",
+        "200",
+        "0",
+        "14280"
+      ],
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    },
+    {
+      "name": "Python: Debug CLI - One SAWLOG (56B)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "${env:PLC_ADDRESS}",
+        "200",
+        "0",
+        "56"
+      ],
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    },
+    {
+      "name": "Python: Release CLI - One SAWLOG (56B)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "noDebug": true,
+      "args": [
+        "${env:PLC_ADDRESS}",
+        "200",
+        "0",
+        "56"
+      ],
+      "env": {
+        "PLC_ADDRESS": "192.168.61.110"
+      }
+    }
+  ]
+}
+

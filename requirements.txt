@@ -1,0 +1,2 @@
+# Core PLC communication library
+python-snap7>=1.2.0
