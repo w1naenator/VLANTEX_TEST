@@ -33,7 +33,7 @@ class DetailWindow:
         self._current_index = start_index
         # Cached widgets to avoid rebuild flicker
         self._header_value_labels: list[tk.Label] = []
-        self._flags_cells: list[tk.Label] = []  # 16 cells (hidden in view/edit unified mode)
+        self._flags_cells: list[tk.Label] = []  # 32 cells (hidden in view/edit unified mode)
         self._buttons_cells: list[tk.Label] = []  # 64 cells (hidden in view/edit unified mode)
         # Unified editors used for both view/edit (disabled in view mode)
         self._header_edit_entries: list[tk.Entry] = []
@@ -195,6 +195,7 @@ class DetailWindow:
             record.zone_id,
             record.sensor_id,
             record.length,
+            record.position,
             record.drop_box_number,
             record.timestamp.to_datetime().isoformat(sep=" "),
         ]
@@ -210,7 +211,7 @@ class DetailWindow:
                 pass
 
         # Update flags (checkbox variables)
-        for i in range(16):
+        for i in range(32):
             try:
                 self._flag_check_vars[i].set(bool(record.flags[i]))
             except Exception:
@@ -218,9 +219,9 @@ class DetailWindow:
 
         # Update buttons (entries) as pairs per index: order then count
         try:
-            # Interleaved layout: even indices = orders, odd indices = counts
-            orders = tuple(int(record.buttons[2 * i]) for i in range(32))
-            counts = tuple(int(record.buttons[2 * i + 1]) for i in range(32))
+            # New layout: first 32 then 32
+            orders = tuple(int(record.buttons[i]) for i in range(32))
+            counts = tuple(int(record.buttons[32 + i]) for i in range(32))
         except Exception:
             orders = counts = ()
         for idx in range(32):
@@ -280,7 +281,7 @@ class DetailWindow:
         # Header
         header_frame = ttk.LabelFrame(self._content, text="Header")
         header_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=8)
-        header_labels = ["ID", "Zone", "Sensor", "Length", "DropBox", "Timestamp"]
+        header_labels = ["ID", "Zone", "Sensor", "Length", "Position", "DropBox", "Timestamp"]
         for r, label in enumerate(header_labels):
             ttk.Label(header_frame, text=f"{label}:").grid(row=r, column=0, sticky="w", padx=6, pady=2)
             # Keep label element for legacy but hide it; use entry for both view/edit
@@ -296,12 +297,12 @@ class DetailWindow:
         header_frame.columnconfigure(1, weight=1)
 
         # Flags grid
-        flags_frame = ttk.LabelFrame(self._content, text="Flags (FL0..FL15)")
+        flags_frame = ttk.LabelFrame(self._content, text="Flags (FL0..FL31)")
         flags_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=8)
         add_cell(flags_frame, "", 0, 0, header=True, width=3)
         for c in range(8):
             add_cell(flags_frame, c, 0, c + 1, header=True, width=3)
-        for r in range(2):
+        for r in range(4):
             add_cell(flags_frame, r * 8, r + 1, 0, header=True, width=3)
             for c in range(8):
                 # Keep legacy cell hidden; use checkbox for view/edit
@@ -316,7 +317,7 @@ class DetailWindow:
                 self._flag_checkbuttons.append(chk)
         for c in range(9):
             flags_frame.columnconfigure(c, weight=1)
-        for r in range(3):
+        for r in range(5):
             flags_frame.rowconfigure(r, weight=1)
 
         # Buttons grid (split by 8). 4 rows (0,8,16,24) x 8 columns (0..7).
@@ -417,13 +418,14 @@ class DetailWindow:
             zone_val = int(self._header_edit_entries[1].get()) & 0xFF
             sensor_val = int(self._header_edit_entries[2].get()) & 0xFF
             length_val = int(self._header_edit_entries[3].get()) & 0xFFFF
-            dropbox_val = int(self._header_edit_entries[4].get()) & 0xFFFF
+            position_val = int(self._header_edit_entries[4].get()) & 0xFFFFFFFF
+            dropbox_val = int(self._header_edit_entries[5].get()) & 0xFFFF
         except Exception:
             tk.messagebox.showerror("Invalid input", "Header fields must be numbers.", parent=self._win)
             return
 
         flags = tuple(bool(var.get()) for var in self._flag_check_vars)
-        # Read UI entries: first 32 are orders, next 32 are counts; interleave them
+        # Read UI entries: first 32 are orders, next 32 are counts (no interleave)
         raw_vals: list[int] = []
         for ent in self._button_edit_entries:
             try:
@@ -434,13 +436,7 @@ class DetailWindow:
             raw_vals.append(v)
         if len(raw_vals) < 64:
             raw_vals += [0] * (64 - len(raw_vals))
-        orders = raw_vals[:32]
-        counts = raw_vals[32:64]
-        interleaved: list[int] = []
-        for i in range(32):
-            interleaved.append(orders[i])
-            interleaved.append(counts[i])
-        buttons_t = tuple(interleaved)
+        buttons_t = tuple(raw_vals[:64])
 
         # Timestamp: parse from the Timestamp entry if provided; fallback to current record's value
         recs = self._data_provider() or ()
@@ -449,7 +445,7 @@ class DetailWindow:
         current_ts = recs[self._current_index].timestamp
         ts_entry = ""
         try:
-            ts_entry = (self._header_edit_entries[5].get() or "").strip()
+            ts_entry = (self._header_edit_entries[6].get() or "").strip()
         except Exception:
             ts_entry = ""
 
@@ -494,6 +490,7 @@ class DetailWindow:
                 zone_id=zone_val,
                 sensor_id=sensor_val,
                 length=length_val,
+                position=position_val,
                 drop_box_number=dropbox_val,
                 flags=flags,
                 buttons=buttons_t,

@@ -36,19 +36,18 @@ def summarise_sawlogs(records: Iterable[SAWLOG]) -> Tuple[str, ...]:
     for index, record in enumerate(records):
         timestamp = record.timestamp.to_datetime().isoformat(sep=" ")
         flags = "".join("1" if flag else "0" for flag in record.flags)
-        # Show first 5 buttons as order,count pairs (interleaved)
+        # Show first 5 buttons as order,count pairs; new layout is first 32 then 32
         try:
-            pair_preview = [
-                f"{int(record.buttons[2*i])},{int(record.buttons[2*i+1])}"
-                for i in range(5)
-            ]
+            orders = record.buttons[:32]
+            counts = record.buttons[32:64]
+            pair_preview = [f"{int(orders[i])},{int(counts[i])}" for i in range(5)]
             buttons_preview = " ".join(pair_preview)
             buttons_preview += " ..."
         except Exception:
             buttons_preview = ""
         lines.append(
             f"[{index:03}] id={record.id} zone={record.zone_id} sensor={record.sensor_id} "
-            f"length={record.length} drop_box={record.drop_box_number} "
+            f"length={record.length} position={record.position} drop_box={record.drop_box_number} "
             f"flags={flags} buttons={buttons_preview} timestamp={timestamp}"
         )
     return tuple(lines)
@@ -76,9 +75,9 @@ def summarise_payload(
 
     parsed_records: Records | None = sawlog_records
 
-    if parsed_records is None and size % SAWLOG.BYTE_SIZE == 0:
+    if parsed_records is None:
         try:
-            parsed_records = SAWLOG.array_from_bytes(bytes(payload))
+            parsed_records = SAWLOG.array_from_bytes_compat(bytes(payload))
         except ValueError:
             parsed_records = None
 
@@ -96,9 +95,9 @@ def summarise_payload(
                 f"{SawlogsRegisterDB.DB_BYTE_SIZE} bytes)."
             )
     else:
-        if size % SAWLOG.BYTE_SIZE != 0:
+        if (size % SAWLOG.BYTE_SIZE != 0) and (size % getattr(SAWLOG, 'LEGACY_BYTE_SIZE', 88) != 0):
             lines.append(
-                f"Payload length is not a multiple of SAWLOG size ({SAWLOG.BYTE_SIZE} bytes); "
+                f"Payload length is not a multiple of SAWLOG sizes (94 or 88 bytes); "
                 "skipping structured parse."
             )
 

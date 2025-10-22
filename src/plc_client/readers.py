@@ -24,10 +24,9 @@ def fetch_payload_and_records(
 
     payload = client.read_db(db, start, size)
     records: Records | None = None
-    if len(payload) > 0 and (len(payload) % SAWLOG.BYTE_SIZE == 0):
+    if len(payload) > 0:
         try:
-            records = SAWLOG.array_from_bytes(bytes(payload))
+            records = SAWLOG.array_from_bytes_compat(bytes(payload))
         except ValueError:
             records = None
     return payload, records
-

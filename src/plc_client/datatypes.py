@@ -69,15 +69,17 @@ class DTL:
 class SAWLOG:
     """Represents the SAWLOG structure.
 
-    Layout (big-endian):
+    New layout (big-endian):
     - id: U32
     - zone_id: U8
     - sensor_id: U8
     - length: U16
+    - position: U32
     - drop_box_number: U16
-    - flags: 16 boolean flags packed into 2 bytes (bit0 = FL0)
-    - buttons: 32 buttons, each with two bytes [order, count] as unsigned bytes,
-               stored interleaved as 64 raw bytes: order0, count0, order1, count1, ...
+    - flags_0: 16 boolean flags packed into 2 bytes (bit0 = FL0)
+    - flags_1: 16 boolean flags packed into 2 bytes (bit0 = FL16)
+    - buttons: Byte[2][32] => 64 bytes total, first 32 then second 32
+               (kept here as a flat tuple of 64 bytes: orders[32] + counts[32])
     - timestamp: DTL (12 bytes)
     """
 
@@ -85,22 +87,32 @@ class SAWLOG:
     zone_id: int
     sensor_id: int
     length: int
+    position: int
     drop_box_number: int
+    # 32 flags total, flattened FL0..FL31
     flags: Tuple[bool, ...]
-    # buttons are kept as a flat 64-byte tuple in PLC order: [order0, count0, order1, count1, ...]
+    # buttons stored as 64 raw bytes: first 32, then 32 (e.g. orders[32] + counts[32])
     buttons: Tuple[int, ...]
     timestamp: DTL
 
-    FLAGS_COUNT: ClassVar[int] = 16
+    FLAGS_COUNT: ClassVar[int] = 32
     BUTTON_COUNT: ClassVar[int] = 32
-    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct(">IBBHH")
-    _FLAGS_BYTE_SIZE: ClassVar[int] = 2
-    _BUTTONS_BYTE_SIZE: ClassVar[int] = BUTTON_COUNT * 2  # 64 bytes interleaved
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct(">IBBHIH")
+    _FLAGS_BYTE_SIZE: ClassVar[int] = 4  # two groups of 16
+    _BUTTONS_BYTE_SIZE: ClassVar[int] = BUTTON_COUNT * 2  # 64 bytes
     BYTE_SIZE: ClassVar[int] = (
         _HEADER_STRUCT.size
         + _FLAGS_BYTE_SIZE
         + _BUTTONS_BYTE_SIZE
         + DTL._STRUCT.size
+    )
+    # Legacy (v1) layout constants (88 bytes total):
+    # id:U32, zone:U8, sensor:U8, length:U16, drop_box:U16, flags:2, buttons:64 (interleaved), dtl:12
+    _LEGACY_HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct(">IBBHH")
+    _LEGACY_FLAGS_SIZE: ClassVar[int] = 2
+    _LEGACY_BUTTONS_SIZE: ClassVar[int] = 64  # interleaved pairs order,count
+    LEGACY_BYTE_SIZE: ClassVar[int] = (
+        _LEGACY_HEADER_STRUCT.size + _LEGACY_FLAGS_SIZE + _LEGACY_BUTTONS_SIZE + DTL._STRUCT.size
     )
 
     def __post_init__(self) -> None:
@@ -112,7 +124,7 @@ class SAWLOG:
         buttons = tuple(int(button) for button in self.buttons)
         if len(buttons) != self._BUTTONS_BYTE_SIZE:
             raise ValueError(
-                f"buttons must contain {self._BUTTONS_BYTE_SIZE} entries (32 orders + 32 counts)"
+                f"buttons must contain {self._BUTTONS_BYTE_SIZE} entries (32 + 32)"
             )
         if any(button < 0 or button > 0xFF for button in buttons):
             raise ValueError("button bytes must be in range 0-255")
@@ -126,6 +138,8 @@ class SAWLOG:
             raise ValueError("sensor_id must fit in an unsigned byte")
         if not (0 <= self.length <= 0xFFFF):
             raise ValueError("length must fit in an unsigned word")
+        if not (0 <= self.position <= 0xFFFFFFFF):
+            raise ValueError("position must fit in an unsigned double word")
         if not (0 <= self.drop_box_number <= 0xFFFF):
             raise ValueError("drop_box_number must fit in an unsigned word")
 
@@ -137,6 +151,7 @@ class SAWLOG:
             self.zone_id,
             self.sensor_id,
             self.length,
+            self.position,
             self.drop_box_number,
         )
         flags_bytes = self._pack_flags(self.flags)
@@ -171,7 +186,8 @@ class SAWLOG:
             zone_id=header[1],
             sensor_id=header[2],
             length=header[3],
-            drop_box_number=header[4],
+            position=header[4],
+            drop_box_number=header[5],
             flags=flags,
             buttons=buttons,
             timestamp=timestamp,
@@ -198,24 +214,95 @@ class SAWLOG:
             records.append(cls.from_bytes(bytes(chunk)))
         return tuple(records)
 
+    # -- compatibility helpers -------------------------------------------------
+    @classmethod
+    def from_legacy_bytes(cls, payload: bytes) -> "SAWLOG":
+        """Parse the legacy 88-byte SAWLOG and map to the new shape.
+
+        - sensor_id stays U8
+        - position is set to 0 (field did not exist)
+        - 16 flags are padded with another 16 as False
+        - buttons are converted from interleaved pairs to [first32 + next32]
+        """
+
+        if len(payload) != cls.LEGACY_BYTE_SIZE:
+            raise ValueError("legacy SAWLOG payload must be 88 bytes")
+        off = 0
+        h = cls._LEGACY_HEADER_STRUCT.unpack_from(payload, off)
+        off += cls._LEGACY_HEADER_STRUCT.size
+        flags2 = payload[off : off + cls._LEGACY_FLAGS_SIZE]
+        off += cls._LEGACY_FLAGS_SIZE
+        buttons_inter = payload[off : off + cls._LEGACY_BUTTONS_SIZE]
+        off += cls._LEGACY_BUTTONS_SIZE
+        ts = DTL.from_bytes(payload[off : off + DTL._STRUCT.size])
+
+        # flags: 16 bits -> pad to 32
+        val = int.from_bytes(flags2, byteorder="big")
+        flags0 = tuple(bool(val & (1 << i)) for i in range(16))
+        flags_full = flags0 + (False,) * 16
+
+        # buttons: interleaved -> first32 + next32
+        orders = [buttons_inter[2 * i] for i in range(32)]
+        counts = [buttons_inter[2 * i + 1] for i in range(32)]
+        buttons_new = tuple(int(b) for b in (orders + counts))
+
+        return cls(
+            id=h[0],
+            zone_id=h[1],
+            sensor_id=h[2],
+            length=h[3],
+            position=0,
+            drop_box_number=h[4],
+            flags=flags_full,
+            buttons=buttons_new,
+            timestamp=ts,
+        )
+
+    @classmethod
+    def array_from_bytes_compat(cls, payload: bytes) -> Tuple["SAWLOG", ...]:
+        """Parse as new layout (94B) when possible, otherwise legacy (88B)."""
+
+        if len(payload) == 0:
+            return tuple()
+        if len(payload) % cls.BYTE_SIZE == 0:
+            return cls.array_from_bytes(payload)
+        if len(payload) % cls.LEGACY_BYTE_SIZE == 0:
+            recs = []
+            view = memoryview(payload)
+            for offset in range(0, len(payload), cls.LEGACY_BYTE_SIZE):
+                chunk = view[offset : offset + cls.LEGACY_BYTE_SIZE]
+                recs.append(cls.from_legacy_bytes(bytes(chunk)))
+            return tuple(recs)
+        raise ValueError("payload length is neither a multiple of 94 nor 88 bytes")
+
     @staticmethod
     def _pack_flags(flags: Tuple[bool, ...]) -> bytes:
-        value = 0
-        for index, flag in enumerate(flags):
-            if flag:
-                value |= 1 << index
-        return value.to_bytes(SAWLOG._FLAGS_BYTE_SIZE, byteorder="big")
+        if len(flags) != SAWLOG.FLAGS_COUNT:
+            raise ValueError("flags payload must have 32 entries")
+        # two words, big-endian; lower 16 bits = FL0..15, upper 16 bits = FL16..31
+        low = 0
+        high = 0
+        for index in range(16):
+            if flags[index]:
+                low |= 1 << index
+        for index in range(16, 32):
+            if flags[index]:
+                high |= 1 << (index - 16)
+        return low.to_bytes(2, byteorder="big") + high.to_bytes(2, byteorder="big")
 
     @staticmethod
     def _unpack_flags(payload: bytes) -> Tuple[bool, ...]:
         if len(payload) != SAWLOG._FLAGS_BYTE_SIZE:
             raise ValueError("flags payload has invalid length")
-        value = int.from_bytes(payload, byteorder="big")
-        return tuple(bool(value & (1 << index)) for index in range(SAWLOG.FLAGS_COUNT))
+        low = int.from_bytes(payload[0:2], byteorder="big")
+        high = int.from_bytes(payload[2:4], byteorder="big")
+        flags0 = tuple(bool(low & (1 << i)) for i in range(16))
+        flags1 = tuple(bool(high & (1 << i)) for i in range(16))
+        return flags0 + flags1
 
     @staticmethod
     def _pack_buttons(buttons: Tuple[int, ...]) -> bytes:
-        # buttons already represent 64 raw bytes (orders then counts)
+        # buttons represent 64 raw bytes: first 32 then 32
         if len(buttons) != SAWLOG._BUTTONS_BYTE_SIZE:
             raise ValueError("buttons payload has invalid length")
         return bytes(byte & 0xFF for byte in buttons)
@@ -224,7 +311,7 @@ class SAWLOG:
     def _unpack_buttons(payload: bytes) -> Tuple[int, ...]:
         if len(payload) != SAWLOG._BUTTONS_BYTE_SIZE:
             raise ValueError("buttons payload has invalid length")
-        # Return as 64 raw bytes (orders then counts)
+        # Return as 64 raw bytes: first 32 then next 32
         return tuple(int(b) for b in payload)
 
 

@@ -38,7 +38,7 @@
         "${env:PLC_ADDRESS}",
         "200",
         "0",
-        "14280"
+        "23970"
       ],
       "env": {
         "PLC_ADDRESS": "192.168.61.110"
@@ -57,14 +57,14 @@
         "${env:PLC_ADDRESS}",
         "200",
         "0",
-        "14280"
+        "23970"
       ],
       "env": {
         "PLC_ADDRESS": "192.168.61.110"
       }
     },
     {
-      "name": "Python: Debug CLI - One SAWLOG (56B)",
+      "name": "Python: Debug CLI - One SAWLOG (94B)",
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/src/main.py",
@@ -75,14 +75,14 @@
         "${env:PLC_ADDRESS}",
         "200",
         "0",
-        "56"
+        "94"
       ],
       "env": {
         "PLC_ADDRESS": "192.168.61.110"
       }
     },
     {
-      "name": "Python: Release CLI - One SAWLOG (56B)",
+      "name": "Python: Release CLI - One SAWLOG (94B)",
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/src/main.py",
@@ -94,7 +94,7 @@
         "${env:PLC_ADDRESS}",
         "200",
         "0",
-        "56"
+        "94"
       ],
       "env": {
         "PLC_ADDRESS": "192.168.61.110"
@@ -102,4 +102,3 @@
     }
   ]
 }
-

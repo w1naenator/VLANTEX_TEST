@@ -57,10 +57,10 @@ data blocks, inputs, or outputs. It can interpret the S7 `DTL` structure, indivi
 4. Or run a one-off read from the CLI:
 
    ```powershell
-   python src/main.py 192.168.61.110 200 0 22440 --rack 0 --slot 1
+   python src/main.py 192.168.61.110 200 0 23970 --rack 0 --slot 1
    ```
 
-   When the requested range covers the full register (offset `0`, length `22440`), the
+   When the requested range covers the full register (offset `0`, length `23970`), the
    client reads into `SawlogsRegisterDB` so you can iterate over typed `SAWLOG`
    instances.
 
@@ -70,7 +70,7 @@ Open the Run and Debug panel and pick one of the included launch configurations:
 
 - Python: Debug GUI (main.py)
 - Python: Release GUI (main.py)
-- Python: Debug CLI – Full Register (DB200, 22440 bytes)
+- Python: Debug CLI – Full Register (DB200, 23970 bytes)
 - Python: Release CLI – Full Register
 
 You can change the target IP via the `PLC_ADDRESS` environment variable in
@@ -79,8 +79,8 @@ You can change the target IP via the `PLC_ADDRESS` environment variable in
 ## GUI overview
 
 - Two tabs: “Overview” (default) and “Console”.
-- Overview table columns: Index, ID, Zone, Sensor, Length, DropBox, Flags, Buttons, Timestamp.
-  - Flags render as blocks (█/░) with a double space between two groups of eight.
+- Overview table columns: Index, ID, Zone, Sensor, Length, Position, DropBox, Flags, Buttons, Timestamp.
+  - Flags render as blocks (█/░) with a double space between four groups of eight.
   - Buttons shows 32 pairs as "order,count" (decimal), space‑separated.
   - Table preserves selection and scroll positions on refresh; columns autosize to content.
   - Double‑click a row to open the Details window.
@@ -96,10 +96,10 @@ You can change the target IP via the `PLC_ADDRESS` environment variable in
   needed (e.g., some devices use slot 2).
 - `plc_client.datatypes.DTL` models the Siemens Date-and-Time structure (12 bytes) and
   converts to Python `datetime`.
-- `plc_client.datatypes.SAWLOG` captures a record: header fields, 16 packed flags,
-  32 buttons with two unsigned bytes each (order and count), and an embedded `DTL` timestamp. Size: 88 bytes.
+- `plc_client.datatypes.SAWLOG` captures a record: header fields (including `position` and 8‑bit `sensor_id`), 32 packed flags (two words),
+  32 buttons as Byte[2][32] (first 32 then 32, e.g. orders followed by counts), and an embedded `DTL` timestamp. Size: 94 bytes.
 - `plc_client.datatypes.SawlogsRegisterDB` represents the 255‑entry register (DB200).
-- Writing one SAWLOG is implemented (`PLCClient.write_db`, `write_sawlog_record`); ensure DB layout matches the SAWLOG struct (88 bytes, non‑optimized).
+- Writing one SAWLOG is implemented (`PLCClient.write_db`, `write_sawlog_record`); ensure DB layout matches the SAWLOG struct (94 bytes, non‑optimized).
 - PLC must allow PUT/GET and the data block should be non‑optimized (standard
   compatible) for absolute DB access.
 
@@ -154,10 +154,11 @@ Run the app:
 - CLI example (expects a reachable PLC):
 
   ```powershell
-  dist\PLCReader\PLCReader.exe 192.168.61.110 200 0 22440 --rack 0 --slot 1 --tcp-port 102
+  dist\PLCReader\PLCReader.exe 192.168.61.110 200 0 23970 --rack 0 --slot 1 --tcp-port 102
   ```
 
 Notes:
 
 - The build bundles the `snap7` runtime DLL so no extra runtime install is needed.
 - `settings.json` is looked up next to the launcher (EXE); if missing, defaults are used and the file is created on save from the Settings window.
+

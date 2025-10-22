@@ -173,6 +173,7 @@ class PLCReaderApp:
             "Zone",
             "Sensor",
             "Length",
+            "Position",
             "DropBox",
             "Flags",
             "Buttons",
@@ -212,6 +213,7 @@ class PLCReaderApp:
             "Zone": ("Zone", 60),
             "Sensor": ("Sensor", 70),
             "Length": ("Length", 80),
+            "Position": ("Position", 100),
             "DropBox": ("DropBox", 90),
             "Flags": ("Flags", 120),
             "Buttons": ("Buttons", 900),
@@ -298,6 +300,16 @@ class PLCReaderApp:
                             backoff = 1.0
                         payload, records = fetch_payload_and_records(client, db, start, size)
                         self._console_log(f"Read {len(payload)} byte(s) from DB{db} @ {start}")
+                        if records is None:
+                            try:
+                                from plc_client import SAWLOG as _SAWLOG, SawlogsRegisterDB as _SRDB
+                                legacy = getattr(_SAWLOG, 'LEGACY_BYTE_SIZE', 88)
+                                if size != _SRDB.DB_BYTE_SIZE and ((len(payload) % _SAWLOG.BYTE_SIZE) != 0 and (len(payload) % legacy) != 0):
+                                    self._console_log(
+                                        f"Note: Size {size} is not full register ({_SRDB.DB_BYTE_SIZE}) and not a multiple of SAWLOG sizes (94 or 88); cannot parse table."
+                                    )
+                            except Exception:
+                                pass
                         self._post_result_with_records("", records, success=True)
                     except Exception as exc:
                         # Unexpected disconnect: mark offline but keep last data in table
@@ -485,17 +497,27 @@ class PLCReaderApp:
         if not records:
             return
         for index, record in enumerate(records):
-            # Render flags with spaces; add double space between two groups of 8
+            # Render flags with spaces; 4 groups of 8
             # Use full block for True (█) and light shade for False (░)
             _flag_glyphs = ["█" if flag else "░" for flag in record.flags]
-            if len(_flag_glyphs) >= 16:
-                flags_boxes = " ".join(_flag_glyphs[:8]) + "  " + " ".join(_flag_glyphs[8:16])
+            if len(_flag_glyphs) >= 32:
+                flags_boxes = (
+                    " ".join(_flag_glyphs[:8])
+                    + "  "
+                    + " ".join(_flag_glyphs[8:16])
+                    + "  "
+                    + " ".join(_flag_glyphs[16:24])
+                    + "  "
+                    + " ".join(_flag_glyphs[24:32])
+                )
             else:
                 flags_boxes = " ".join(_flag_glyphs)
-            # Show 32 buttons as "order:count" pairs (decimal), interleaved in payload
+            # Show 32 buttons as "order:count" pairs (decimal), new layout first 32 then 32
             try:
+                orders = record.buttons[:32]
+                counts = record.buttons[32:64]
                 buttons_full = " ".join(
-                    f"{int(record.buttons[2*i])}:{int(record.buttons[2*i+1])}" for i in range(32)
+                    f"{int(orders[i])}:{int(counts[i])}" for i in range(32)
                 )
             except Exception:
                 buttons_full = ""
@@ -510,6 +532,7 @@ class PLCReaderApp:
                     record.zone_id,
                     record.sensor_id,
                     record.length,
+                    record.position,
                     record.drop_box_number,
                     flags_boxes,
                     buttons_full,
