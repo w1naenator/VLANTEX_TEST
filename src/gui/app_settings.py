@@ -17,7 +17,7 @@ class AppSettings:
     tcp_port: int = 102
     db: int = 200
     start: int = 0
-    size: int = 14280
+    size: int = 22440
     interval_ms: int = 1000
 
 

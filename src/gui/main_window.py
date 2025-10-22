@@ -214,7 +214,7 @@ class PLCReaderApp:
             "Length": ("Length", 80),
             "DropBox": ("DropBox", 90),
             "Flags": ("Flags", 120),
-            "Buttons": ("Buttons", 800),
+            "Buttons": ("Buttons", 900),
             "Timestamp": ("Timestamp", 180),
         }
         for col in columns:
@@ -492,8 +492,13 @@ class PLCReaderApp:
                 flags_boxes = " ".join(_flag_glyphs[:8]) + "  " + " ".join(_flag_glyphs[8:16])
             else:
                 flags_boxes = " ".join(_flag_glyphs)
-            # Show all 64 button values as hex nibbles
-            buttons_full = " ".join(f"{b:X}" for b in record.buttons)
+            # Show 32 buttons as "order:count" pairs (decimal), interleaved in payload
+            try:
+                buttons_full = " ".join(
+                    f"{int(record.buttons[2*i])}:{int(record.buttons[2*i+1])}" for i in range(32)
+                )
+            except Exception:
+                buttons_full = ""
             timestamp = record.timestamp.to_datetime().isoformat(sep=" ")
             self.tree.insert(
                 "",

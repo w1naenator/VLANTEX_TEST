@@ -36,9 +36,16 @@ def summarise_sawlogs(records: Iterable[SAWLOG]) -> Tuple[str, ...]:
     for index, record in enumerate(records):
         timestamp = record.timestamp.to_datetime().isoformat(sep=" ")
         flags = "".join("1" if flag else "0" for flag in record.flags)
-        buttons_preview = " ".join(f"{button:X}" for button in record.buttons[:8])
-        if len(record.buttons) > 8:
+        # Show first 5 buttons as order,count pairs (interleaved)
+        try:
+            pair_preview = [
+                f"{int(record.buttons[2*i])},{int(record.buttons[2*i+1])}"
+                for i in range(5)
+            ]
+            buttons_preview = " ".join(pair_preview)
             buttons_preview += " ..."
+        except Exception:
+            buttons_preview = ""
         lines.append(
             f"[{index:03}] id={record.id} zone={record.zone_id} sensor={record.sensor_id} "
             f"length={record.length} drop_box={record.drop_box_number} "

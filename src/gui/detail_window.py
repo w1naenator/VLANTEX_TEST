@@ -216,15 +216,34 @@ class DetailWindow:
             except Exception:
                 pass
 
-        # Update buttons (entries)
-        for i in range(64):
+        # Update buttons (entries) as pairs per index: order then count
+        try:
+            # Interleaved layout: even indices = orders, odd indices = counts
+            orders = tuple(int(record.buttons[2 * i]) for i in range(32))
+            counts = tuple(int(record.buttons[2 * i + 1]) for i in range(32))
+        except Exception:
+            orders = counts = ()
+        for idx in range(32):
+            # order entry at position idx; count entry at position 32+idx
             try:
-                ent = self._button_edit_entries[i]
-                ent.configure(state="normal")
-                ent.delete(0, tk.END)
-                ent.insert(0, str(int(record.buttons[i])))
+                ent_o = self._button_edit_entries[idx]
+                ent_c = self._button_edit_entries[32 + idx]
+            except Exception:
+                continue
+            try:
+                ent_o.configure(state="normal")
+                ent_o.delete(0, tk.END)
+                ent_o.insert(0, str(orders[idx] if idx < len(orders) else 0))
                 if not self._edit_mode:
-                    ent.configure(state="disabled")
+                    ent_o.configure(state="disabled")
+            except Exception:
+                pass
+            try:
+                ent_c.configure(state="normal")
+                ent_c.delete(0, tk.END)
+                ent_c.insert(0, str(counts[idx] if idx < len(counts) else 0))
+                if not self._edit_mode:
+                    ent_c.configure(state="disabled")
             except Exception:
                 pass
 
@@ -300,25 +319,48 @@ class DetailWindow:
         for r in range(3):
             flags_frame.rowconfigure(r, weight=1)
 
-        # Buttons grid
-        buttons_frame = ttk.LabelFrame(self._content, text="Buttons (BT0..BT63)")
+        # Buttons grid (split by 8). 4 rows (0,8,16,24) x 8 columns (0..7).
+        # Each column cell contains two stacked fields: [order]\n[count].
+        buttons_frame = ttk.LabelFrame(self._content, text="Buttons (Order/Count), split by 8")
         buttons_frame.grid(row=1, column=1, sticky="nsew", padx=8, pady=8)
-        add_cell(buttons_frame, "", 0, 0, header=True, width=3)
+        # Header row: columns 0..7
+        add_cell(buttons_frame, "", 0, 0, header=True, width=4)
         for c in range(8):
-            add_cell(buttons_frame, c, 0, c + 1, header=True, width=3)
-        for r in range(8):
-            add_cell(buttons_frame, r * 8, r + 1, 0, header=True, width=3)
+            add_cell(buttons_frame, c, 0, c + 1, header=True, width=4)
+        # Build cells: 4 button-rows; each grid row contains 8 columns, each a small frame with two entries
+        # Keep internal list ordering as first all orders[0..31], then all counts[0..31]
+        per_button_frames: list[tk.Frame] = []
+        # First pass: create frames and order fields
+        orders_list: list[tk.Entry] = []
+        counts_list: list[tk.Entry] = []
+        for r_block in range(4):
+            row_label = r_block * 8
+            add_cell(buttons_frame, row_label, r_block + 1, 0, header=True, width=4)
             for c in range(8):
-                cell = add_cell(buttons_frame, "", r + 1, c + 1, width=3)
-                cell.grid_remove()
-                self._buttons_cells.append(cell)
-                ent = tk.Entry(buttons_frame, width=3)
-                ent.grid(row=r + 1, column=c + 1)
-                ent.configure(state="disabled")
-                self._button_edit_entries.append(ent)
+                idx = r_block * 8 + c
+                # Hidden placeholder to satisfy legacy structure check
+                placeholder = add_cell(buttons_frame, "", r_block + 1, c + 1, width=4)
+                placeholder.grid_remove()
+                self._buttons_cells.append(placeholder)
+                cell = tk.Frame(buttons_frame)
+                cell.grid(row=r_block + 1, column=c + 1, sticky="nsew")
+                per_button_frames.append(cell)
+                ent_ord = tk.Entry(cell, width=4)
+                ent_ord.pack(side="left")
+                ent_ord.configure(state="disabled")
+                orders_list.append(ent_ord)
+                ent_cnt = tk.Entry(cell, width=4)
+                ent_cnt.pack(side="left")
+                ent_cnt.configure(state="disabled")
+                counts_list.append(ent_cnt)
+
+        # Combine into the expected ordering: 32 orders followed by 32 counts
+        self._button_edit_entries = list(orders_list) + list(counts_list)
+
+        # Layout stretch
         for c in range(9):
             buttons_frame.columnconfigure(c, weight=1)
-        for r in range(9):
+        for r in range(5):
             buttons_frame.rowconfigure(r, weight=1)
 
         self._content.columnconfigure(0, weight=1)
@@ -381,21 +423,70 @@ class DetailWindow:
             return
 
         flags = tuple(bool(var.get()) for var in self._flag_check_vars)
-        buttons = []
+        # Read UI entries: first 32 are orders, next 32 are counts; interleave them
+        raw_vals: list[int] = []
         for ent in self._button_edit_entries:
             try:
                 v = int(ent.get(), 0)
             except Exception:
                 v = 0
-            v = max(0, min(v, 15))
-            buttons.append(v)
-        buttons_t = tuple(buttons)
+            v = max(0, min(v, 255))
+            raw_vals.append(v)
+        if len(raw_vals) < 64:
+            raw_vals += [0] * (64 - len(raw_vals))
+        orders = raw_vals[:32]
+        counts = raw_vals[32:64]
+        interleaved: list[int] = []
+        for i in range(32):
+            interleaved.append(orders[i])
+            interleaved.append(counts[i])
+        buttons_t = tuple(interleaved)
 
-        # Timestamp: keep previous value from provider (no direct editing of timestamp for simplicity)
+        # Timestamp: parse from the Timestamp entry if provided; fallback to current record's value
         recs = self._data_provider() or ()
         if not (0 <= self._current_index < len(recs)):
             return
-        ts = recs[self._current_index].timestamp
+        current_ts = recs[self._current_index].timestamp
+        ts_entry = ""
+        try:
+            ts_entry = (self._header_edit_entries[5].get() or "").strip()
+        except Exception:
+            ts_entry = ""
+
+        if not ts_entry or ts_entry.lower() in ("keep", "same"):
+            ts = current_ts
+        else:
+            # Accept ISO 8601 with space or 'T', optional microseconds, optional timezone.
+            try:
+                from datetime import datetime, timezone
+                iso = ts_entry.replace("T", " ")
+                # Handle trailing 'Z'
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                dt = datetime.fromisoformat(iso)
+                if dt.tzinfo is not None:
+                    # Convert to local time and drop tzinfo (DTL has no timezone)
+                    dt = dt.astimezone().replace(tzinfo=None)
+                weekday = dt.isoweekday()  # 1..7 (Mon..Sun)
+                nanosecond = dt.microsecond * 1000
+                from plc_client import DTL  # local import to avoid circulars at module load
+                ts = DTL(
+                    year=dt.year,
+                    month=dt.month,
+                    day=dt.day,
+                    weekday=weekday,
+                    hour=dt.hour,
+                    minute=dt.minute,
+                    second=dt.second,
+                    nanosecond=nanosecond,
+                )
+            except Exception as exc:
+                tk.messagebox.showerror(
+                    "Invalid timestamp",
+                    f"Use ISO format like YYYY-MM-DD HH:MM:SS[.ffffff].\nDetails: {exc}",
+                    parent=self._win,
+                )
+                return
 
         try:
             new_record = SAWLOG(

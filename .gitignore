@@ -1,0 +1,63 @@
+/dist/
+/build/
+__pycache__/
+
+# Python bytecode
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.nox/
+.tox/
+
+# Coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Packaging / distribution
+wheels/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+__pypackages__/
+
+# C extensions / compiled
+*.pyd
+*.so
+*.dylib
+
+# Editor/IDE
+.idea/
+.vscode/
+.vs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs and archives
+*.log
+*.zip
+*.tar
+*.gz
+*.7z
+
+# Environment files (local secrets)
+.env
+.env.*
+
+# Project-specific
+PLCReader.spec
+src/settings.json

@@ -67,7 +67,19 @@ class DTL:
 
 @dataclass(frozen=True)
 class SAWLOG:
-    """Represents the SAWLOG structure with packed flags and nibble data."""
+    """Represents the SAWLOG structure.
+
+    Layout (big-endian):
+    - id: U32
+    - zone_id: U8
+    - sensor_id: U8
+    - length: U16
+    - drop_box_number: U16
+    - flags: 16 boolean flags packed into 2 bytes (bit0 = FL0)
+    - buttons: 32 buttons, each with two bytes [order, count] as unsigned bytes,
+               stored interleaved as 64 raw bytes: order0, count0, order1, count1, ...
+    - timestamp: DTL (12 bytes)
+    """
 
     id: int
     zone_id: int
@@ -75,14 +87,15 @@ class SAWLOG:
     length: int
     drop_box_number: int
     flags: Tuple[bool, ...]
+    # buttons are kept as a flat 64-byte tuple in PLC order: [order0, count0, order1, count1, ...]
     buttons: Tuple[int, ...]
     timestamp: DTL
 
     FLAGS_COUNT: ClassVar[int] = 16
-    BUTTON_COUNT: ClassVar[int] = 64
+    BUTTON_COUNT: ClassVar[int] = 32
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct(">IBBHH")
     _FLAGS_BYTE_SIZE: ClassVar[int] = 2
-    _BUTTONS_BYTE_SIZE: ClassVar[int] = BUTTON_COUNT // 2
+    _BUTTONS_BYTE_SIZE: ClassVar[int] = BUTTON_COUNT * 2  # 64 bytes interleaved
     BYTE_SIZE: ClassVar[int] = (
         _HEADER_STRUCT.size
         + _FLAGS_BYTE_SIZE
@@ -97,10 +110,12 @@ class SAWLOG:
         object.__setattr__(self, "flags", flags)
 
         buttons = tuple(int(button) for button in self.buttons)
-        if len(buttons) != self.BUTTON_COUNT:
-            raise ValueError(f"buttons must contain {self.BUTTON_COUNT} entries")
-        if any(button < 0 or button > 0x0F for button in buttons):
-            raise ValueError("buttons must be in range 0-15")
+        if len(buttons) != self._BUTTONS_BYTE_SIZE:
+            raise ValueError(
+                f"buttons must contain {self._BUTTONS_BYTE_SIZE} entries (32 orders + 32 counts)"
+            )
+        if any(button < 0 or button > 0xFF for button in buttons):
+            raise ValueError("button bytes must be in range 0-255")
         object.__setattr__(self, "buttons", buttons)
 
         if self.id < 0:
@@ -200,22 +215,17 @@ class SAWLOG:
 
     @staticmethod
     def _pack_buttons(buttons: Tuple[int, ...]) -> bytes:
-        buffer = bytearray(SAWLOG._BUTTONS_BYTE_SIZE)
-        for i in range(0, SAWLOG.BUTTON_COUNT, 2):
-            high = buttons[i] & 0x0F
-            low = buttons[i + 1] & 0x0F
-            buffer[i // 2] = (high << 4) | low
-        return bytes(buffer)
+        # buttons already represent 64 raw bytes (orders then counts)
+        if len(buttons) != SAWLOG._BUTTONS_BYTE_SIZE:
+            raise ValueError("buttons payload has invalid length")
+        return bytes(byte & 0xFF for byte in buttons)
 
     @staticmethod
     def _unpack_buttons(payload: bytes) -> Tuple[int, ...]:
         if len(payload) != SAWLOG._BUTTONS_BYTE_SIZE:
             raise ValueError("buttons payload has invalid length")
-        result = []
-        for byte in payload:
-            result.append(byte >> 4)
-            result.append(byte & 0x0F)
-        return tuple(result)
+        # Return as 64 raw bytes (orders then counts)
+        return tuple(int(b) for b in payload)
 
 
 @dataclass(frozen=True)
